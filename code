@@ -1,0 +1,220 @@
+
+### Importo librerias ###
+
+import pandas as pd
+from binance.client import Client
+from binance.enums import *
+import time 
+import talib as ta
+import numpy as np
+
+### Me conecto con la API y chekeo la buena la conexion ###
+
+while True: #Bucle para repetir todo el tiempo
+    try:
+        APY_KEY = "APY KEY"
+        APY_SECRET = "APY SECRET"
+        client = Client(APY_KEY, APY_SECRET)
+        print("API OK")
+    except:
+        print("No funca la API bro chekea")
+
+    # defino la cripto con la que opero
+
+    cripto = "THETAUSDT"  # ELIJO CON QUE COIN TRADEAR
+
+    ### Defino el Apalancamiento ###
+    try:
+        palanca = client.futures_change_leverage(symbol=cripto, leverage = 10)
+        print("Apalancamiento OK")
+    except:
+        print("Ya estaba X10, no hice nada")
+
+    ### Defino el tipo de margin CRUZADO/AISLADO ###
+    try:
+        margin = client.futures_change_margin_type(symbol=cripto , marginType = "ISOLATED") 
+        print("Se cambio el modo de Margin")
+    except:
+        print("Ya estaba en ISOLATED")
+
+### Saco el saldo de mi cuenta en BNB/USDT/BUSD ###
+
+    Saldo = client.futures_account_balance()
+    print("----------------------------------------------")
+    print("El saldo de $BNB es: ", Saldo[0].get("balance"))
+    print("El saldo de $USDT es: ", Saldo[1].get("balance"))
+    print("El saldo de $BUSD es: ", Saldo[2].get("balance"))
+    print("----------------------------------------------")
+
+    ### Saco la cotizacion de la cripto a operar ###
+
+    lista_tickets = client.futures_symbol_ticker()
+
+    for ticket in lista_tickets: 
+        lista = []
+        valores = ticket.values()
+        valores = list(valores)
+        if valores[0] == cripto:
+                CRIPTO = valores[0]
+                PRECIO_CRIPTO = float(valores[1])
+                print("--------------------")
+                print(CRIPTO, "$", PRECIO_CRIPTO)
+        else:
+            pass
+
+    ### Saco la unidad operativa, equivalente al %10 del total de la cuenta en USDT, Elijo los decimales###
+    # No usar bien la cantidad de decimales, puede traer errores, en una Cripto de baja cotizacion no se puede tradear con decimales"
+
+    UnidadOperativa = round((float(Saldo[1].get("balance"))*1)/PRECIO_CRIPTO,1) #el uno son los decimales
+    print("La unidad con la que opera el bot es: ", UnidadOperativa, cripto)
+
+    ### Saco los datos que necesito para calcular los indicadores en temporalidad elegida, 15minutos en este caso ###
+
+    kline_cripto = client.futures_historical_klines(cripto, Client.KLINE_INTERVAL_15MINUTE, "20 hour ago UTC-3", end_str=None, limit=500)
+
+    cripto_date = []
+    cripto_open = []
+    cripto_close = []
+    cripto_low = []
+    cripto_high = []
+    cripto_volume = []
+    for k in kline_cripto:
+        cripto_open.append(k[1])
+        cripto_close.append(k[4])
+        cripto_high.append(k[2])
+        cripto_low.append(k[3])
+        cripto_volume.append(k[5])
+        cripto_date.append(k[0])
+
+    datos_cripto = pd.DataFrame(cripto_date, columns=["Date"])
+    datos_cripto["Open"]   = cripto_open
+    datos_cripto["High"]   = cripto_high
+    datos_cripto["Low"]    = cripto_low
+    datos_cripto["close"]  = cripto_close
+    datos_cripto["volume"] = cripto_volume
+    datos_cripto.set_index("Date", inplace=True) # seteo del indice
+    datos_cripto.index = pd.to_datetime(cripto_date, unit="ms") # formateo de la fecha (es el horario de otro lado, pero messirve igualmente)
+
+    ### Calculo los indicadores ###
+
+     # calculo las EMA 4/9/18  con Talib, usando un roling no es tan preciso como la libreria
+    datos_cripto["EMA_4"] = ta.EMA(datos_cripto["close"], timeperiod = 4)
+    datos_cripto["EMA_9"] = ta.EMA(datos_cripto["close"], timeperiod = 9)
+    datos_cripto["EMA_18"] = ta.EMA(datos_cripto["close"], timeperiod = 18)
+    print(datos_cripto.tail(5))
+
+    #calculo de indicadores MACD y Parabolic Sar 
+    # Tengo que pasar de lista a numpy
+
+    cripto_close_float = [float(x) for x in cripto_close] #formateo el np para que funcione
+    cripto_close_np = np.array(cripto_close_float)
+
+    cripto_high_float = [float(x) for x in cripto_high] 
+    cripto_high_np = np.array(cripto_high_float)
+
+    cripto_low_float = [float(x) for x in cripto_low] 
+    cripto_low_np = np.array(cripto_low_float)
+
+    #MACD
+    macd, macdsignal, macdhist = ta.MACD(cripto_close_np, fastperiod=6, slowperiod=13, signalperiod=9)
+    #Parabolic SAR
+    sar = ta.SAR(cripto_high_np, cripto_low_np, acceleration=0.02, maximum=0.2)
+    print(sar[-1])
+    ### Calculo las senales de los indicadores ###
+
+    # SAR
+    signal_sar = 0
+    if float(sar[-1]) > float(datos_cripto["EMA_4"][-1]):
+        signal_sar = "SHORT"
+        print(" SAR: ", signal_sar)
+    else:
+        signal_sar = "LONG"
+        print(" SAR: ", signal_sar)
+
+    # EMAS
+    signal_ema = 0 
+    if float(datos_cripto["EMA_4"][-1]) > float(datos_cripto["EMA_9"][-1]) and float(datos_cripto["EMA_4"][-1]) > float(datos_cripto["EMA_18"][-1]) and float(datos_cripto["EMA_9"][-1]) > float(datos_cripto["EMA_18"][-1]):
+        signal_ema = "LONG"
+        print(" EMA: ", signal_ema)
+    elif float(datos_cripto["EMA_18"][-1]) > float(datos_cripto["EMA_9"][-1]) and float(datos_cripto["EMA_18"][-1]) > float(datos_cripto["EMA_4"][-1]) and float(datos_cripto["EMA_9"][-1]) > float(datos_cripto["EMA_4"][-1]):
+        signal_ema = "SHORT"
+        print(" EMA: ",  signal_ema)
+    else:
+        signal_ema = "WAIT"
+        print(" EMA: ", signal_ema)
+
+    # MACD 
+    signal_macd_entrada = 0
+    if float(macd[-1]) < 0 and float(macdsignal[-1]) < 0 : #ese numero deberia ser un poco mas del  promedio de los valores negativos, calcular despues bien
+        signal_macd_entrada = "LONG"
+        print(" MACD: ",signal_macd_entrada)
+    elif float(macdsignal[-1]) > 0 and float(macd[-1]) > 0 : #ese numero deberia ser un poco mas del  promedio de los valores positivos, calcular despues bien
+        signal_macd_entrada = "SHORT"
+        print(" MACD entrada: ", signal_macd_entrada)
+    else:
+        signal_macd_entrada = "WAIT"
+        print(" MACD entrada: ", signal_macd_entrada)
+        
+    signal_macd_mantener = 0
+    if float(macd[-1]) > float(macdsignal[-1]):
+        signal_macd_mantener = "LONG"
+        print(" MACD mantener : ",signal_macd_mantener)
+    elif float(macdsignal[-1]) > float(macd[-1]):
+        signal_macd_mantener = "SHORT"
+        print(" MACD mantener: ", signal_macd_mantener)
+    else:
+        signal_macd = "No mantener"
+        print(" MACD mantener: ", signal_macd_mantener)
+
+    ### Logica para arir y cerrar posiciones, dependiendo las emas, el macd, el Sar ###
+    # Esto puede variar dependiendo la estrategia de cada uno #
+
+    posicion = client.futures_position_information(symbol = cripto)
+    tipo_posicion = float(posicion[0]["positionAmt"])
+    print(tipo_posicion) #saco info de la posicion 
+
+    # Cierro las posiciones, abriendo una igual pero con signo contrario #
+    if tipo_posicion > 0: #osea es positiva
+        unidad_de_cierre = float(tipo_posicion)
+        print("La unidad de cierre es", unidad_de_cierre) 
+    elif tipo_posicion < 0: # osea es negativa
+        unidad_de_cierre = float(tipo_posicion)*-1
+        print("La unidad de cierre es", unidad_de_cierre) 
+    else: # osea nula
+        pass
+    
+    
+    # Chekeo que la orden abierta siga LONG, si algun indicador cambio, la cierro #
+    
+    if tipo_posicion > 0: #si es positivo la orden es LONG
+        if signal_sar == "LONG"  and signal_macd_mantener == "LONG" and macdhist[-1] > 0 and signal_ema != "SHORT":
+            print("Mantengo posicion ")
+        elif signal_sar != "LONG"  or signal_macd_mantener != "LONG" or macdhist[-1] < 0 or signal_ema == "SHORT":
+            order_long = client.futures_create_order(symbol = cripto, side = Client.SIDE_SELL, type = Client.ORDER_TYPE_MARKET, quantity = unidad_de_cierre) 
+            print(order_long)
+        else:
+            pass
+        
+    # Chekeo que la orden abierta siga SHORT, si algun indicador cambio, la cierro #
+    
+    elif tipo_posicion < 0: #si es negativo la orden es SHORT
+        if signal_sar != "SHORT"  or signal_macd_mantener != "SHORT" or macdhist[-1] > 0 or signal_ema == "LONG": #si se cumple esto cierro
+            order_long = client.futures_create_order(symbol = cripto, side = Client.SIDE_BUY, type = Client.ORDER_TYPE_MARKET, quantity = unidad_de_cierre) 
+            print(order_long)
+        elif signal_sar == "SHORT"  and signal_macd_mantener == "SHORT" and macdhist[-1] < 0 and signal_ema != "LONG":
+            print("Mantengo posicion perro")
+        else:
+            print("Algo raro pasa ojo")
+            
+    # Abro las posicion LONG o SHORT con la unidad operativa, dependiendo la logica, si no paso y compruebo en un rato#
+    
+    else: #orden nula osea no hay
+            if signal_sar == "LONG"  and signal_macd_mantener == "LONG" and macdhist[-1] > 0 and signal_macd_entrada == "LONG" and signal_ema != "SHORT": #Meto Long
+                order_long = client.futures_create_order(symbol = cripto, side = Client.SIDE_BUY, type = Client.ORDER_TYPE_MARKET, quantity = UnidadOperativa) 
+                print(order_long)
+            elif signal_sar == "SHORT" and signal_macd_mantener == "SHORT" and macdhist[-1] < 0 and signal_macd_entrada == "SHORT" and signal_ema != "LONG": #Meto Short
+                order_short = client.futures_create_order(symbol = cripto, side = Client.SIDE_SELL, type = Client.ORDER_TYPE_MARKET, quantity = UnidadOperativa) 
+                print(order_short)
+            else: #No hago nada
+                print("No abro nada x ahora")
+    time.sleep(200.00) #Le doy una pausa para no colpasar la API y para que la volatilidad no me abra posiciones cada 1 segundo, y genere excesivas comisiones
